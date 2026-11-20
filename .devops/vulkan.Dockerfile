@@ -3,7 +3,25 @@ ARG BUILD_DATE=N/A
 ARG APP_VERSION=N/A
 ARG APP_REVISION=N/A
 
-FROM ubuntu:$UBUNTU_VERSION AS build
+ARG NODE_VERSION=24
+
+FROM docker.io/node:$NODE_VERSION AS web
+
+ARG APP_VERSION
+
+WORKDIR /app/ui/apps/chat
+
+COPY ui/apps/chat/package.json ui/apps/chat/package-lock.json ./
+RUN npm ci
+
+COPY ui/apps/chat/ ./
+# the app compiles Llama UI and Llama Voice from their sources next to it
+COPY ui/lib/ui/package.json /app/ui/lib/ui/package.json
+COPY ui/lib/ui/src/lib/ /app/ui/lib/ui/src/lib/
+COPY ui/lib/voice/src/ /app/ui/lib/voice/src/
+RUN LLAMA_BUILD_NUMBER="$APP_VERSION" npm run build
+
+FROM docker.io/ubuntu:$UBUNTU_VERSION AS build
 
 # Install build tools
 RUN apt update && apt install -y git build-essential cmake wget xz-utils
@@ -16,6 +34,8 @@ RUN apt install -y libssl-dev curl \
 WORKDIR /app
 
 COPY . .
+
+COPY --from=web /app/ui/apps/chat/dist ui/apps/chat/dist
 
 RUN cmake -B build -DGGML_NATIVE=OFF -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON && \
     cmake --build build --config Release -j$(nproc)
@@ -33,7 +53,7 @@ RUN mkdir -p /app/full \
     && cp .devops/tools.sh /app/full/tools.sh
 
 ## Base image
-FROM ubuntu:$UBUNTU_VERSION AS base
+FROM docker.io/ubuntu:$UBUNTU_VERSION AS base
 
 ARG BUILD_DATE=N/A
 ARG APP_VERSION=N/A
@@ -49,7 +69,7 @@ LABEL org.opencontainers.image.created=$BUILD_DATE \
       org.opencontainers.image.source=$IMAGE_SOURCE
 
 RUN apt-get update \
-    && apt-get install -y libgomp1 curl libvulkan1 mesa-vulkan-drivers \
+    && apt-get install -y libgomp1 curl ffmpeg libvulkan1 mesa-vulkan-drivers \
     libglvnd0 libgl1 libglx0 libegl1 libgles2 \
     && apt autoremove -y \
     && apt clean -y \
@@ -66,20 +86,14 @@ COPY --from=build /app/full /app
 
 WORKDIR /app
 
-ENV PATH="/root/.venv/bin:/root/.local/bin:${PATH}"
-
-# Flag for compatibility with pip
-ARG UV_INDEX_STRATEGY="unsafe-best-match"
 RUN apt-get update \
     && apt-get install -y \
-    build-essential \
-    curl \
     git \
-    ca-certificates \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && uv python install 3.13 \
-    && uv venv --python 3.13 /root/.venv \
-    && uv pip install --python /root/.venv/bin/python -r requirements.txt \
+    python3 \
+    python3-pip \
+    python3-wheel \
+    && pip install --break-system-packages --upgrade setuptools \
+    && pip install --break-system-packages -r requirements.txt \
     && apt autoremove -y \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \
@@ -91,7 +105,7 @@ ENTRYPOINT ["/app/tools.sh"]
 ### Light, CLI only
 FROM base AS light
 
-COPY --from=build /app/full/llama-cli /app/full/llama-completion /app
+COPY --from=build /app/full/llama /app/full/llama-cli /app/full/llama-completion /app/
 
 WORKDIR /app
 
@@ -101,8 +115,9 @@ ENTRYPOINT [ "/app/llama-cli" ]
 FROM base AS server
 
 ENV LLAMA_ARG_HOST=0.0.0.0
+ENV LLAMA_ARG_PORT=8080
 
-COPY --from=build /app/full/llama-server /app
+COPY --from=build /app/full/llama /app/full/llama-server /app/
 
 WORKDIR /app
 

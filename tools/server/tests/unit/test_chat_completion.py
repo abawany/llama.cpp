@@ -238,6 +238,10 @@ def test_apply_chat_template():
     ({"type": "json_object", "schema": {"const": "42"}}, 6, "\"42\""),
     ({"type": "json_object", "schema": {"items": [{"type": "integer"}]}}, 10, "[ -3000 ]"),
     ({"type": "json_schema", "json_schema": {"schema": {"const": "foooooo"}}}, 10, "\"foooooo\""),
+    ({"type": "json_schema", "schema": {"const": "foooooo"}}, 10, "\"foooooo\""),
+    # the json_schema wrapper takes precedence over a top-level schema, even when its schema is {}
+    ({"type": "json_schema", "json_schema": {"schema": {"const": "foooooo"}}, "schema": {"const": "42"}}, 10, "\"foooooo\""),
+    ({"type": "json_schema", "json_schema": {"schema": {}}, "schema": {"type": "hiccup"}}, 10, ".+"),
     ({"type": "json_object"}, 10, "(\\{|John)+"),
     ({"type": "sound"}, 0, None),
     # invalid response format (expected to fail)
@@ -305,6 +309,20 @@ def test_completion_with_grammar(jinja: bool, grammar: str, n_predicted: int, re
     assert res.status_code == 200, res.body
     choice = res.body["choices"][0]
     assert match_regex(re_content, choice["message"]["content"]), choice["message"]["content"]
+
+
+def test_completion_with_invalid_grammar():
+    global server
+    server.start()
+    res = server.make_request("POST", "/chat/completions", data={
+        "max_tokens": 8,
+        "messages": [
+            {"role": "user", "content": "Does not matter what I say, does it?"},
+        ],
+        "grammar": "root ::= this is (not valid GBNF",
+    })
+    assert res.status_code == 400, res.body
+    assert "error" in res.body
 
 
 @pytest.mark.parametrize("messages", [
@@ -573,3 +591,43 @@ def test_chat_completions_multiple_choices():
         for choice in res.body["choices"]:
             assert "assistant" == choice["message"]["role"]
             assert choice["finish_reason"] == "length"
+        # each choice generates max_tokens tokens, usage counts them all
+        # ref: https://github.com/ggml-org/llama.cpp/issues/29451
+        assert res.body["usage"]["completion_tokens"] == 16
+        assert res.body["usage"]["total_tokens"] == res.body["usage"]["prompt_tokens"] + 16
+
+
+def test_chat_completions_token_count():
+    global server
+    server.start()
+    # make sure cache can be reused across multiple choices and multiple requests
+    # ref: https://github.com/ggml-org/llama.cpp/pull/18663
+    for _ in range(2):
+        res = server.make_request("POST", "/chat/completions/input_tokens", data={
+            "messages": [
+                {"role": "system", "content": "Book"},
+                {"role": "user", "content": "What is the best book"},
+            ],
+        })
+        assert res.status_code == 200
+        assert res.body["input_tokens"] > 5
+
+
+def test_verbose_debug():
+    global server
+    server.start()
+    for verbose in [True, False]:
+        res = server.make_request("POST", "/chat/completions", data={
+            "max_tokens": 2,
+            "messages": [
+                {"role": "system", "content": "Book"},
+                {"role": "user", "content": "What is the best book"},
+            ],
+            "verbose": verbose,
+        })
+        assert res.status_code == 200
+        if verbose:
+            assert "__verbose" in res.body
+            assert "Book" in res.body["__verbose"]["prompt"]
+        else:
+            assert "__verbose" not in res.body

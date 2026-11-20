@@ -12,9 +12,9 @@ from .deepseek import DeepseekV2Model
 from .llama import LlamaModel
 
 if _mistral_common_installed:
-    from mistral_common.tokens.tokenizers.base import TokenizerVersion  # type: ignore[import-not-found, ty:unresolved-import]
-    from mistral_common.tokens.tokenizers.tekken import Tekkenizer  # type: ignore[import-not-found, ty:unresolved-import]
-    from mistral_common.tokens.tokenizers.sentencepiece import SentencePieceTokenizer  # type: ignore[import-not-found, ty:unresolved-import]
+    from mistral_common.tokens.tokenizers.base import TokenizerVersion  # ty: ignore[import-not-found]
+    from mistral_common.tokens.tokenizers.tekken import Tekkenizer  # ty: ignore[import-not-found]
+    from mistral_common.tokens.tokenizers.sentencepiece import SentencePieceTokenizer  # ty: ignore[import-not-found]
 else:
     TokenizerVersion = None  # type: ignore[assignment]
     Tekkenizer = None  # type: ignore[assignment]
@@ -105,8 +105,9 @@ class MistralModel(LlamaModel):
             gguf_writer.add_rope_scaling_yarn_log_mul(mscale_all_dim)
             gguf_writer.add_rope_scaling_orig_ctx_len(yarn_params["original_max_position_embeddings"])
 
-        if "llama_4_scaling" in hparams:
-            gguf_writer.add_attn_temperature_scale(hparams["llama_4_scaling"]["beta"])
+        llama_4_scaling = hparams.get("llama_4_scaling")
+        if llama_4_scaling is not None:
+            gguf_writer.add_attn_temperature_scale(llama_4_scaling["beta"])
 
 
 class MistralMoeModel(DeepseekV2Model):

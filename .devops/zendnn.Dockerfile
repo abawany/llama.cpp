@@ -3,7 +3,25 @@ ARG BUILD_DATE=N/A
 ARG APP_VERSION=N/A
 ARG APP_REVISION=N/A
 
-FROM ubuntu:$UBUNTU_VERSION AS build
+ARG NODE_VERSION=24
+
+FROM docker.io/node:$NODE_VERSION AS web
+
+ARG APP_VERSION
+
+WORKDIR /app/ui/apps/chat
+
+COPY ui/apps/chat/package.json ui/apps/chat/package-lock.json ./
+RUN npm ci
+
+COPY ui/apps/chat/ ./
+# the app compiles Llama UI and Llama Voice from their sources next to it
+COPY ui/lib/ui/package.json /app/ui/lib/ui/package.json
+COPY ui/lib/ui/src/lib/ /app/ui/lib/ui/src/lib/
+COPY ui/lib/voice/src/ /app/ui/lib/voice/src/
+RUN LLAMA_BUILD_NUMBER="$APP_VERSION" npm run build
+
+FROM docker.io/ubuntu:$UBUNTU_VERSION AS build
 
 RUN apt-get update && \
     apt-get install -y gcc-13 g++-13 build-essential git cmake libssl-dev libomp-dev libnuma-dev python3 ca-certificates
@@ -13,6 +31,8 @@ ENV CC=gcc-13 CXX=g++-13
 WORKDIR /app
 
 COPY . .
+
+COPY --from=web /app/ui/apps/chat/dist ui/apps/chat/dist
 
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_ZENDNN=ON && \
     cmake --build build -j $(nproc)
@@ -30,7 +50,7 @@ RUN mkdir -p /app/full \
     && cp .devops/tools.sh /app/full/tools.sh
 
 ## Base image
-FROM ubuntu:$UBUNTU_VERSION AS base
+FROM docker.io/ubuntu:$UBUNTU_VERSION AS base
 
 ARG BUILD_DATE=N/A
 ARG APP_VERSION=N/A
@@ -46,7 +66,7 @@ LABEL org.opencontainers.image.created=$BUILD_DATE \
       org.opencontainers.image.source=$IMAGE_SOURCE
 
 RUN apt-get update \
-    && apt-get install -y libgomp1 libnuma1 curl \
+    && apt-get install -y libgomp1 libnuma1 curl ffmpeg \
     && apt autoremove -y \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \
@@ -81,7 +101,7 @@ ENTRYPOINT ["/app/tools.sh"]
 ### Light, CLI only
 FROM base AS light
 
-COPY --from=build /app/full/llama-cli /app/full/llama-completion /app
+COPY --from=build /app/full/llama /app/full/llama-cli /app/full/llama-completion /app/
 
 WORKDIR /app
 
@@ -91,8 +111,9 @@ ENTRYPOINT [ "/app/llama-cli" ]
 FROM base AS server
 
 ENV LLAMA_ARG_HOST=0.0.0.0
+ENV LLAMA_ARG_PORT=8080
 
-COPY --from=build /app/full/llama-server /app
+COPY --from=build /app/full/llama /app/full/llama-server /app/
 
 WORKDIR /app
 
